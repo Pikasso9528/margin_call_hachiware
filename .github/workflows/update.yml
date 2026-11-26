@@ -1,0 +1,61 @@
+name: 每日更新融資維持率
+
+# GitHub 排程用 UTC：台北時間 = UTC + 8
+on:
+  schedule:
+    # msbk 通常在台北 22:30–23:40 之間更新，所以排在他之後
+    - cron: '5 15 * * 1-5'    # 台北 23:05：同步；他還沒好就先自己算
+    - cron: '35 16 * * 1-5'   # 台北 00:35：再同步一次，他補上了就改用他的
+    - cron: '5 0 * * 2-6'     # 台北 08:05：最後確認（前一晚兩次都失敗時補救）
+  workflow_dispatch:
+    inputs:
+      backfill:
+        description: '緊急用：自己從頭回補的交易日數（平常留空）'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: margin-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: 同步或自行計算
+        run: |
+          if [ -n "${{ inputs.backfill }}" ]; then
+            python scripts/update.py --backfill "${{ inputs.backfill }}"
+          else
+            python scripts/update.py
+          fi
+
+      - name: 提交資料（含歷史）
+        run: |
+          git config user.name  "margin-bot"
+          git config user.email "margin-bot@users.noreply.github.com"
+          git add docs/data state
+          if git diff --cached --quiet; then
+            echo "沒有新資料"
+            exit 0
+          fi
+          git commit -m "data: $(TZ=Asia/Taipei date '+%F %H:%M')"
+          git pull --rebase || { git rebase --abort; echo "::warning::推送衝突，下次再更新"; exit 0; }
+          git push
